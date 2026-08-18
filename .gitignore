@@ -1,1 +1,10 @@
-.venv
+
+.venv/
+__pycache__/
+*.pyc
+build/
+dist/
+*.spec
+captured_photos/
+.vscode/
+.idea/
