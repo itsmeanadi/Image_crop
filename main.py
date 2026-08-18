@@ -1,13 +1,3 @@
-"""
-Finger Frame Camera
---------------------
-Make a rectangle with both hands (thumbs + index fingers), hold it steady,
-and the app counts down and captures a photo cropped to that rectangle.
-
-Usage:
-    python main.py [--camera 0] [--output captured_photos]
-"""
-
 import argparse
 import logging
 import os
@@ -21,10 +11,9 @@ import cv2
 import mediapipe as mp
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
-log = logging.getLogger("finger_frame_camera")
+log = logging.getLogger("Klix")
 
 Rect = Tuple[int, int, int, int]
-
 
 @dataclass
 class Config:
@@ -37,8 +26,7 @@ class Config:
     post_capture_hold_s: float = 1.0
     min_detection_confidence: float = 0.7
     min_tracking_confidence: float = 0.7
-    window_name: str = "Finger Frame Camera"
-
+    window_name: str = "Klix"
 
 class FingerFrameCamera:
     def __init__(self, config: Config):
@@ -50,18 +38,13 @@ class FingerFrameCamera:
             min_detection_confidence=config.min_detection_confidence,
             min_tracking_confidence=config.min_tracking_confidence,
         )
-
         self.frame_history: deque[Rect] = deque(maxlen=config.smoothing_frames)
         self.stable_start_time: Optional[float] = None
-
         self.countdown_started = False
         self.countdown_start_time: Optional[float] = None
         self.locked_rectangle: Optional[Rect] = None
         self.photo_captured = False
-
         os.makedirs(config.output_dir, exist_ok=True)
-
-    # -- lifecycle -----------------------------------------------------
 
     def __enter__(self):
         self.cap = cv2.VideoCapture(self.cfg.camera_index)
@@ -76,36 +59,29 @@ class FingerFrameCamera:
         cv2.destroyAllWindows()
 
     def run(self):
-        assert self.cap is not None, "Camera not initialized; use 'with FingerFrameCamera(...) as cam'"
+        assert self.cap is not None
         while True:
             success, frame = self.cap.read()
             if not success:
                 log.warning("Failed to read frame from camera; stopping.")
                 break
-
             frame = cv2.flip(frame, 1)
             frame = self._process_frame(frame)
-
             cv2.imshow(self.cfg.window_name, frame)
             if cv2.waitKey(1) & 0xFF == ord("q"):
                 break
 
-    # -- per-frame logic -------------------------------------------------
-
     def _process_frame(self, frame):
         hand_points = self._detect_hand_points(frame)
-
         if not self.countdown_started:
             self._update_tracking(frame, hand_points)
         else:
             self._update_countdown(frame)
-
         return frame
 
     def _detect_hand_points(self, frame):
         rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
         results = self.hands.process(rgb_frame)
-
         hand_points = []
         if results.multi_hand_landmarks:
             height, width, _ = frame.shape
@@ -126,7 +102,6 @@ class FingerFrameCamera:
 
         current_rect = self._smoothed_rectangle(hand_points)
         self._check_stability(current_rect)
-
         x1, y1, x2, y2 = current_rect
         cv2.rectangle(frame, (x1, y1), (x2, y2), (0, 255, 255), 4)
 
@@ -139,18 +114,17 @@ class FingerFrameCamera:
     def _smoothed_rectangle(self, hand_points) -> Rect:
         all_points = [
             hand_points[0]["thumb"], hand_points[0]["index"],
-            hand_points[1]["thumb"], hand_points[1]["index"],
+            hand_points[1]["thumb"], hand_points[1]["index"]
         ]
         x_values = [p[0] for p in all_points]
         y_values = [p[1] for p in all_points]
         raw_rect = (min(x_values), min(y_values), max(x_values), max(y_values))
-
         self.frame_history.append(raw_rect)
         n = len(self.frame_history)
         smooth = tuple(
             int(sum(p[i] for p in self.frame_history) / n) for i in range(4)
         )
-        return smooth  # type: ignore[return-value]
+        return smooth
 
     def _check_stability(self, current_rect: Rect):
         if len(self.frame_history) < 2:
@@ -162,7 +136,6 @@ class FingerFrameCamera:
         if movement < self.cfg.stability_threshold_px:
             if self.stable_start_time is None:
                 self.stable_start_time = time.time()
-
             stable_duration = time.time() - self.stable_start_time
             if stable_duration >= self.cfg.stable_time_required_s:
                 self._lock_and_start_countdown(current_rect)
@@ -179,23 +152,24 @@ class FingerFrameCamera:
         assert self.locked_rectangle is not None and self.countdown_start_time is not None
         x1, y1, x2, y2 = self.locked_rectangle
         cv2.rectangle(frame, (x1, y1), (x2, y2), (0, 255, 255), 4)
-
         elapsed = time.time() - self.countdown_start_time
-        countdown_text = self._countdown_text(elapsed)
-        self._draw_centered_text(frame, countdown_text)
+        if elapsed >= self.cfg.countdown_seconds and not self.photo_captured:
+            self._capture_photo(frame)
+            self.photo_captured = True
+            frame[:] = 255
 
         if elapsed >= self.cfg.countdown_seconds and not self.photo_captured:
             self._capture_photo(frame)
             self.photo_captured = True
 
+        if elapsed < self.cfg.countdown_seconds:
+            self._draw_centered_text(frame, self._countdown_text(elapsed))
+
         if elapsed >= self.cfg.countdown_seconds + self.cfg.post_capture_hold_s:
             self._reset_state()
 
     def _countdown_text(self, elapsed: float) -> str:
-        remaining = self.cfg.countdown_seconds - elapsed
-        if remaining > 0:
-            return str(int(remaining) + 1)
-        return "CAPTURE!"
+        return str(int(self.cfg.countdown_seconds - elapsed) + 1)
 
     def _draw_centered_text(self, frame, text: str):
         text_size = cv2.getTextSize(text, cv2.FONT_HERSHEY_SIMPLEX, 3, 6)[0]
@@ -208,7 +182,6 @@ class FingerFrameCamera:
         assert self.locked_rectangle is not None
         x1, y1, x2, y2 = self.locked_rectangle
         h, w, _ = frame.shape
-
         cx1, cy1 = max(0, min(x1, x2)), max(0, min(y1, y2))
         cx2, cy2 = min(w, max(x1, x2)), min(h, max(y1, y2))
 
@@ -230,14 +203,12 @@ class FingerFrameCamera:
         self.photo_captured = False
         self.frame_history.clear()
 
-
 def parse_args() -> Config:
-    parser = argparse.ArgumentParser(description="Finger frame gesture camera")
-    parser.add_argument("--camera", type=int, default=0, help="Camera index (default: 0)")
-    parser.add_argument("--output", type=str, default="captured_photos", help="Output directory for photos")
+    parser = argparse.ArgumentParser(description="Klix")
+    parser.add_argument("--camera", type=int, default=0)
+    parser.add_argument("--output", type=str, default="captured_photos")
     args = parser.parse_args()
     return Config(camera_index=args.camera, output_dir=args.output)
-
 
 def main():
     config = parse_args()
@@ -248,7 +219,6 @@ def main():
         log.error(str(e))
     except KeyboardInterrupt:
         log.info("Interrupted by user.")
-
 
 if __name__ == "__main__":
     main()
